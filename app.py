@@ -3,25 +3,10 @@ import sqlite3, os, math
 from datetime import datetime, date, timedelta
 import config, smtplib
 
-DB_PATH = 'leave.db'
+DB_PATH = os.path.join(os.getcwd(), "leave.db")
 
 app = Flask(__name__)
 app.secret_key = 'change-this-secret-in-prod'
-
-with app.app_context():
-    try:
-        init_db()
-        update_all_balances()
-        print("Database initialized successfully.")
-    except Exception as e:
-        print("Database initialization failed:", e)
-
-with app.app_context():
-    try:
-        init_db()
-        update_all_balances()
-    except Exception as e:
-        print("DB init error:", e)
 
 # ---------------- DB ----------------
 def get_db():
@@ -33,6 +18,7 @@ def init_db():
     seed_needed = not os.path.exists(DB_PATH)
     conn = get_db()
     c = conn.cursor()
+
     c.execute('''CREATE TABLE IF NOT EXISTS employees (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT UNIQUE,
@@ -41,6 +27,7 @@ def init_db():
         entitlement INTEGER,
         current_balance REAL DEFAULT 0
     )''')
+
     c.execute('''CREATE TABLE IF NOT EXISTS leave_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         employee_name TEXT,
@@ -52,17 +39,21 @@ def init_db():
         reason TEXT,
         applied_on TEXT
     )''')
+
     conn.commit()
+
     if seed_needed:
         for emp in config.EMPLOYEES:
-            c.execute("INSERT OR IGNORE INTO employees (name, role, join_date, entitlement, current_balance) VALUES (?, ?, ?, ?, ?)",
-                      (emp['name'], emp['role'], emp['join_date'], emp['entitlement'], 0))
+            c.execute(
+                "INSERT OR IGNORE INTO employees (name, role, join_date, entitlement, current_balance) VALUES (?, ?, ?, ?, ?)",
+                (emp['name'], emp['role'], emp['join_date'], emp['entitlement'], 0)
+            )
         conn.commit()
+
     conn.close()
 
 # ---------------- Accrual ----------------
 def calc_accrual_for_year(emp_row, year):
-    # find config entry
     pattern = None
     ent = None
     for e in config.EMPLOYEES:
@@ -70,29 +61,36 @@ def calc_accrual_for_year(emp_row, year):
             pattern = e['accrual_pattern']
             ent = e['entitlement']
             break
+
     if pattern is None:
-        pattern = {m:2 for m in range(1,13)}
+        pattern = {m: 2 for m in range(1, 13)}
         ent = 24
+
     join_date = datetime.strptime(emp_row['join_date'], '%Y-%m-%d').date()
     total = 0.0
-    for m in range(1,13):
+
+    for m in range(1, 13):
         month_start = date(year, m, 1)
-        if month_start.year < join_date.year or (month_start.year == join_date.year and month_start.month < join_date.month):
+        if month_start < join_date.replace(day=1):
             continue
         if year < config.SYSTEM_START_YEAR:
             continue
         total += float(pattern.get(m, 0))
+
     if ent is not None:
         total = min(total, float(ent))
-    return round(total,2)
+
+    return round(total, 2)
 
 def update_all_balances():
     conn = get_db()
     c = conn.cursor()
+
     emps = c.execute("SELECT * FROM employees").fetchall()
     for e in emps:
         accr = calc_accrual_for_year(e, config.SYSTEM_START_YEAR)
         c.execute("UPDATE employees SET current_balance=? WHERE id=?", (accr, e['id']))
+
     conn.commit()
     conn.close()
 
@@ -115,6 +113,15 @@ def send_email(subject, body):
     except Exception as e:
         print("Email error:", e)
 
+# ---------------- Initialize DB under gunicorn (Render) ----------------
+with app.app_context():
+    try:
+        init_db()
+        update_all_balances()
+        print("Database initialized on Render.")
+    except Exception as e:
+        print("DB init error:", e)
+
 # ---------------- Routes ----------------
 @app.route('/')
 def home():
@@ -126,40 +133,48 @@ def balance(name):
     row = conn.execute("SELECT current_balance FROM employees WHERE name=?", (name,)).fetchone()
     conn.close()
     if not row:
-        return jsonify({'balance':0})
-    # return rounded to 2 decimals
-    return jsonify({'balance': round(row['current_balance'],2) })
+        return jsonify({'balance': 0})
+    return jsonify({'balance': round(row['current_balance'], 2)})
 
 @app.route('/apply', methods=['GET','POST'])
 def apply():
     conn = get_db()
     employees = conn.execute("SELECT name FROM employees ORDER BY name").fetchall()
     conn.close()
+
     if request.method == 'POST':
         emp = request.form['employee']
         ltype = request.form['leave_type']
         s = datetime.strptime(request.form['start_date'], '%Y-%m-%d').date()
         e = datetime.strptime(request.form['end_date'], '%Y-%m-%d').date()
+
         half = request.form.get('half') == 'on'
-        # auto-calc days inclusive
-        days = calc_days_inclusive(s,e)
+        days = calc_days_inclusive(s, e)
         if half:
             days -= 0.5
-        # insert request
+
         conn = get_db()
         bal_row = conn.execute("SELECT current_balance FROM employees WHERE name=?", (emp,)).fetchone()
         bal = bal_row['current_balance'] if bal_row else 0
         warning = bal < days
-        conn.execute("INSERT INTO leave_requests (employee_name, leave_type, start_date, end_date, days, status, reason, applied_on) VALUES (?,?,?,?,?,?,?,?)",
-                     (emp, ltype, s.isoformat(), e.isoformat(), days, 'Pending', request.form.get('reason',''), datetime.now().isoformat()))
+
+        conn.execute("""
+            INSERT INTO leave_requests
+            (employee_name, leave_type, start_date, end_date, days, status, reason, applied_on)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (emp, ltype, s.isoformat(), e.isoformat(), days, 'Pending',
+              request.form.get('reason',''), datetime.now().isoformat()))
         conn.commit()
         conn.close()
+
         if warning:
-            flash(f"Warning: Applying {days} days but only {bal} days available.", "warning")
+            flash(f"Warning: Applying {days} days but only {bal} available.", "warning")
         else:
-            flash("Leave applied", "success")
-        send_email("New leave request", f"{emp} applied for {days} days ({ltype})")
+            flash("Leave applied successfully!", "success")
+
+        send_email("New Leave Request", f"{emp} applied for {days} days ({ltype})")
         return redirect(url_for('apply'))
+
     return render_template('apply_leave.html', employees=employees)
 
 @app.route('/history/<name>')
@@ -181,9 +196,10 @@ def admin():
 def approve(lid):
     conn = get_db()
     lr = conn.execute("SELECT * FROM leave_requests WHERE id=?", (lid,)).fetchone()
-    if lr and lr['status']=='Pending':
+    if lr and lr['status'] == 'Pending':
         conn.execute("UPDATE leave_requests SET status='Approved' WHERE id=?", (lid,))
-        conn.execute("UPDATE employees SET current_balance = current_balance - ? WHERE name=?", (lr['days'], lr['employee_name']))
+        conn.execute("UPDATE employees SET current_balance = current_balance - ? WHERE name=?",
+                     (lr['days'], lr['employee_name']))
         conn.commit()
     conn.close()
     flash("Leave approved", "success")
@@ -210,31 +226,5 @@ def update_entitlement():
     conn.execute("UPDATE employees SET entitlement=? WHERE name=?", (ent_val, name))
     conn.commit()
     conn.close()
-    flash("Entitlement updated. Restart app to recompute balances if needed.", "info")
+    flash("Entitlement updated.", "info")
     return redirect(url_for('admin'))
-
-# ---------------- Startup ----------------
-if __name__ == '__main__':
-    init_db()
-    update_all_balances = None
-    # ensure balances are updated using previous function name if present
-    try:
-        # if old function exists in globals, call it
-        if 'update_all_balances' in globals() and callable(globals()['update_all_balances']):
-            globals()['update_all_balances']()
-    except:
-        pass
-    # fallback: compute balances using calc_accrual_for_year per employee
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM employees").fetchall()
-    for r in rows:
-        # compute with available function
-        try:
-            from math import isfinite
-            accr = calc_accrual_for_year(r, config.SYSTEM_START_YEAR)
-        except Exception:
-            accr = 0
-        conn.execute("UPDATE employees SET current_balance=? WHERE id=?", (accr, r['id']))
-    conn.commit()
-    conn.close()
-    app.run(debug=True, host='0.0.0.0')
