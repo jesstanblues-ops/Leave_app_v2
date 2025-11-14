@@ -61,5 +61,9 @@ EMPLOYEES = [
     }
 ]
 
-ADMIN_EMAIL = "your@email.com"
-ENABLE_EMAIL = False
+ENABLE_EMAIL = True
+
+ADMIN_EMAIL = "jessetan.ba@gmail.com"
+
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
