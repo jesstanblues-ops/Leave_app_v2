@@ -4,9 +4,18 @@ from datetime import datetime, date, timedelta
 import config, smtplib
 
 DB_PATH = 'leave.db'
+
 app = Flask(__name__)
 app.secret_key = 'change-this-secret-in-prod'
-# Ensure DB exists even when running under gunicorn (Render)
+
+with app.app_context():
+    try:
+        init_db()
+        update_all_balances()
+        print("Database initialized successfully.")
+    except Exception as e:
+        print("Database initialization failed:", e)
+
 with app.app_context():
     try:
         init_db()
