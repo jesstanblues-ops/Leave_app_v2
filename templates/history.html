@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block content %}
+<h4>Leave history — {{ name }}</h4>
+<table class="table table-sm">
+  <thead><tr><th>ID</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Applied On</th></tr></thead>
+  <tbody>
+    {% for l in leaves %}
+      <tr>
+        <td>{{ l['id'] }}</td>
+        <td>{{ l['leave_type'] }}</td>
+        <td>{{ l['start_date'] }} → {{ l['end_date'] }}</td>
+        <td>{{ '%.2f'|format(l['days']) }}</td>
+        <td>{{ l['status'] }}</td>
+        <td>{{ l['applied_on'] }}</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
