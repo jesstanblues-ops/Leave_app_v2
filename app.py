@@ -228,3 +228,82 @@ def update_entitlement():
     conn.close()
     flash("Entitlement updated.", "info")
     return redirect(url_for('admin'))
+    # ---------------- Admin Login ----------------
+@app.route('/admin_login', methods=['GET','POST'])
+def admin_login():
+error = None
+if request.method == 'POST':
+input_pw = request.form.get('password')
+correct_pw = os.environ.get("ADMIN_PASSWORD")
+if input_pw and correct_pw and input_pw == correct_pw:
+session['admin_logged_in'] = True
+return redirect(url_for('admin'))
+else:
+error = "Incorrect password"
+return render_template('admin_login.html', error=error)
+
+@app.route('/admin_logout')
+def admin_logout():
+session.pop('admin_logged_in', None)
+flash("Logged out.")
+return redirect(url_for('admin_login'))
+@app.route('/')
+def home():
+return redirect(url_for('apply_leave'))
+
+@app.route('/balance/<name>')
+def balance(name):
+conn = get_db()
+row = conn.execute("SELECT current_balance FROM employees WHERE name=?", (name,)).fetchone()
+conn.close()
+return jsonify({'balance': row['current_balance'] if row else 0})
+
+@app.route('/apply', methods=['GET','POST'])
+def apply_leave():
+conn = get_db()
+employees = conn.execute("SELECT name FROM employees ORDER BY name").fetchall()
+conn.close()
+
+if request.method == 'POST':
+emp = request.form['employee']
+ltype = request.form['leave_type']
+s = datetime.strptime(request.form['start_date'], '%Y-%m-%d').date()
+e = datetime.strptime(request.form['end_date'], '%Y-%m-%d').date()
+half = request.form.get('half','no') == 'yes'
+reason = request.form.get('reason','')
+
+total_days = working_days(s,e)
+if half:
+total_days -= 0.5
+
+conn = get_db()
+bal = conn.execute("SELECT current_balance FROM employees WHERE name=?", (emp,)).fetchone()['current_balance']
+warning = bal < total_days
+
+conn.execute("INSERT INTO leave_requests (employee_name, leave_type, start_date, end_date, days, status, reason, applied_on) VALUES (?,?,?,?,?,?,?,?)",
+(emp, ltype, s.isoformat(), e.isoformat(), total_days, 'Pending', reason, datetime.now().isoformat() ))
+conn.commit()
+conn.close()
+
+if warning:
+flash(f"Warning: Applying {total_days} days but only {bal} days available.")
+else:
+flash("Leave applied.")
+
+send_email("New leave request", f"{emp} applied for leave")
+
+return redirect(url_for('apply_leave'))
+
+return render_template('apply_leave.html', employees=employees)
+
+@app.route('/admin')
+def admin():
+if not session.get('admin_logged_in'):
+return redirect(url_for('admin_login'))
+conn = get_db()
+leaves = conn.execute("SELECT * FROM leave_requests ORDER BY applied_on DESC").fetchall()
+emps = conn.execute("SELECT * FROM employees ORDER BY name").fetchall()
+conn.close()
+return render_template('admin_dashboard.html', leaves=leaves, employees=emps)
+
+@app.route('/history/<name>')
