@@ -6,6 +6,13 @@ import config, smtplib
 DB_PATH = 'leave.db'
 app = Flask(__name__)
 app.secret_key = 'change-this-secret-in-prod'
+# Ensure DB exists even when running under gunicorn (Render)
+with app.app_context():
+    try:
+        init_db()
+        update_all_balances()
+    except Exception as e:
+        print("DB init error:", e)
 
 # ---------------- DB ----------------
 def get_db():
